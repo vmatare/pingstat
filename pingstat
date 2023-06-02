@@ -1,0 +1,71 @@
+#!/bin/bash
+
+TARGET=1.1.1.1
+COUNT=100
+TSLEEP=50
+
+MYARGS="--defaults-file=$HOME/pingstat.conf"
+MYCONN="use pingstat;"
+
+PSQLARGS="--echo-errors -U postgres"
+PSQLCONN="\\c pingstat"
+
+db=psql
+
+dbdo() {
+	echo "$@" >&"${COPROC[1]}" || exit $?
+	echo >&"${COPROC[1]}" || exit $?
+	echo "$@"
+}
+
+
+doping() {
+	local lines fields1 fields2 stat sent rcvd loss rtt_min rtt_max rtt_avg rtt_mdev
+	while true; do
+		readarray lines < <(ping -W1 -q -c $COUNT -A $TARGET | tail -n2)
+		ts=$(date -Iseconds)
+		
+		fields1=( ${lines[0]} )
+		sent=${fields1[0]}
+		rcvd=${fields1[3]}
+		loss=${fields1[5]%\%}
+
+		fields2=( ${lines[1]} )
+		stat=( $(echo ${fields2[3]} | tr / ' ') )
+
+		rtt_min=${stat[0]}
+		rtt_avg=${stat[1]}
+		rtt_max=${stat[2]}
+		rtt_mdev=${stat[3]}
+
+		if [[ ${#fields1[@]} -ge 5 && ${#stat[@]} -ge 3 ]]; then
+			local dbcmd
+			dbcmd="INSERT INTO stats VALUES ('$ts', $loss, $rtt_min, $rtt_max, $rtt_avg, $rtt_mdev, $sent, $rcvd"
+			[[ $db == mysql ]] && dbcmd+=", NULL"
+			dbcmd+=");"
+			dbdo $dbcmd
+		fi
+
+		while read -t .1 -u ${COPROC[0]} myout; do
+			echo "$myout"
+		done
+
+		sleep $TSLEEP
+	done
+}
+
+if [[ $db == psql ]]; then
+	SQLCIENT="psql $PSQLARGS"
+	CONN="$PSQLCONN"
+elif [[ $db == mysql ]]; then
+	SQLCLIENT="mysql $MYARGS"
+	CONN="$MYSQLCONN"
+fi
+
+coproc $SQLCIENT
+echo "coproc $COPROC_PID: ${COPROC[0]} ${COPROC[1]} ${COPROC[2]}"
+trap "kill $COPROC_PID" EXIT
+
+dbdo "$CONN"
+doping
+
